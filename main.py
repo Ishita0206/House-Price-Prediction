@@ -7,17 +7,30 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.preprocessing import FunctionTransformer
 
 MODEL = "model.pkl"
 PIPELINE = 'pipeline.pkl'
+
+def add_extra_features(X):
+    X = X.copy()
+
+    X["rooms_per_household"] = X["total_rooms"] / X["households"]
+    X["bedrooms_per_room"] = X["total_bedrooms"] / X["total_rooms"]
+    X["population_per_household"] = X["population"] / X["households"]
+
+    return X
+
 
 def buildpipeline(num_attributes,cat_attributes):
 
     # for numerical columns
     num_pipeline = Pipeline([
+        ("feature_engineering", FunctionTransformer(add_extra_features, validate=False)),
         ("imputer", SimpleImputer(strategy="median")),   #change null to median
         ("scaler", StandardScaler())   #sclae the features between 0 and 1
     ])
@@ -38,8 +51,8 @@ if not os.path.exists(MODEL):
     housing = pd.read_csv("housing.csv")
 
     housing['income_cat'] = pd.cut(housing["median_income"],
-                                   bins = [0.0, 1.5, 3.0, 4.5, 6.0, np.inf],
-                                   labels = [1, 2, 3, 4, 5])
+                                bins = [0.0, 1.5, 3.0, 4.5, 6.0, np.inf],
+                                labels = [1, 2, 3, 4, 5])
     split  = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
 
     #train-test split
@@ -50,15 +63,51 @@ if not os.path.exists(MODEL):
         housing_labels = housing["median_house_value"].copy()
         housing_features = housing.drop("median_house_value", axis=1)
 
-    num_attributes = housing_features.drop("ocean_proximity", axis=1).columns.tolist()
+    num_attributes = list(housing_features.select_dtypes(include=[np.number]).columns)
     cat_attributes = ["ocean_proximity"]
 
     pipeline = buildpipeline(num_attributes, cat_attributes) 
     housing_prepared = pipeline.fit_transform(housing_features)
 
-    model = RandomForestRegressor()
-    model.fit(housing_prepared, housing_labels)
-    
+    # 🔹 Hyperparameter Tuning
+    param_dist = {
+        "n_estimators": [100, 200, 300],
+        "max_depth": [10, 20, 30, None],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf": [1, 3, 5]
+    }
+
+    rf = GradientBoostingRegressor(random_state=42)
+
+    search = RandomizedSearchCV(
+        rf,
+        param_distributions=param_dist,
+        n_iter=5,
+        scoring="neg_root_mean_squared_error",
+        cv=3,
+        random_state=42,
+        n_jobs=-1,
+        verbose=2
+    )
+
+    search.fit(housing_prepared, housing_labels)
+
+    # Best model after tuning
+    model = search.best_estimator_
+
+    print("Best Parameters:", search.best_params_)
+
+
+    # 🔹 Model Evaluation (RMSE on training data)
+    train_predictions = model.predict(housing_prepared)
+    rmse = root_mean_squared_error(housing_labels, train_predictions)
+    print("Training RMSE:", rmse)
+
+    # 🔹 Cross-Validation
+    cv_scores = cross_val_score(model, housing_prepared, housing_labels, cv=5, scoring="neg_root_mean_squared_error")
+    print("Cross-validation RMSE scores:", -cv_scores)
+    print("Mean CV RMSE:", -cv_scores.mean())
+
     joblib.dump(model, MODEL)
     joblib.dump(pipeline, PIPELINE)
     print("Model and Pipeline saved. Model is triained. congratulations!")
