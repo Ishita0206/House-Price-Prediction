@@ -1,0 +1,7 @@
+# model artifacts
+*.pkl
+*.joblib
+
+# generated data files
+input.csv
+predictions.csv
